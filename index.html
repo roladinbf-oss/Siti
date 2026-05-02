@@ -1214,22 +1214,22 @@ select.inp{cursor:pointer;}
 <div class="toast" id="toast"></div>
 
 <script>
-// ═══ SUPABASE ═══════════════════════════════════════════════════════════
-const SB_URL = 'https://dfvfeyycwigyfvkmxbbj.supabase.co';
-const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRmdmZleXljd2lneWZ2a214YmJqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM3NjgyMjksImV4cCI6MjA4OTM0NDIyOX0.57GvP-FQIxwJL6m6-gnRZ4Cp-Tsj9PHI_9lsrhIOudQ';
-const SBH = {'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Content-Type':'application/json'};
+// ═══ DB API (Railway-hosted Express + Postgres) ══════════════════════════
+// PostgREST-style query syntax is preserved server-side, so call sites are unchanged.
+const API_BASE = '/api';
+const API_HEADERS = {'Content-Type':'application/json'};
 
 async function sbGet(table, q='') {
-  try{const r=await fetch(SB_URL+'/rest/v1/'+table+q,{headers:SBH});if(!r.ok)return[];return await r.json();}catch(e){return[];}
+  try{const r=await fetch(API_BASE+'/'+table+q,{headers:API_HEADERS});if(!r.ok)return[];return await r.json();}catch(e){return[];}
 }
 async function sbPost(table, data) {
-  try{const r=await fetch(SB_URL+'/rest/v1/'+table,{method:'POST',headers:{...SBH,'Prefer':'return=representation'},body:JSON.stringify(data)});if(!r.ok&&r.status!==201){console.error('sbPost',r.status,await r.text());return null;}const res=await r.json();return Array.isArray(res)?res[0]:res;}catch(e){return null;}
+  try{const r=await fetch(API_BASE+'/'+table,{method:'POST',headers:API_HEADERS,body:JSON.stringify(data)});if(!r.ok&&r.status!==201){console.error('sbPost',r.status,await r.text());return null;}const res=await r.json();return Array.isArray(res)?res[0]:res;}catch(e){return null;}
 }
 async function sbPatch(table, filter, data) {
-  try{const r=await fetch(SB_URL+'/rest/v1/'+table+'?'+filter,{method:'PATCH',headers:{...SBH,'Prefer':'return=minimal'},body:JSON.stringify(data)});return r.ok;}catch(e){return false;}
+  try{const r=await fetch(API_BASE+'/'+table+'?'+filter,{method:'PATCH',headers:API_HEADERS,body:JSON.stringify(data)});return r.ok;}catch(e){return false;}
 }
 async function sbDelete(table, filter) {
-  try{const r=await fetch(SB_URL+'/rest/v1/'+table+'?'+filter,{method:'DELETE',headers:SBH});return r.ok;}catch(e){return false;}
+  try{const r=await fetch(API_BASE+'/'+table+'?'+filter,{method:'DELETE',headers:API_HEADERS});return r.ok;}catch(e){return false;}
 }
 
 // ═══ STATE ═══════════════════════════════════════════════════════════
@@ -5767,22 +5767,13 @@ function renderRepMonthly() {
 }
 
 // ═══ STORAGE (העלאת קבצים) ════════════════════════════════════
+// TODO: file storage migration off Supabase. Options:
+//   (a) Railway Volume + multipart endpoint, (b) store as bytea in Postgres,
+//   (c) external (S3/R2). Until decided, scans still create invoices but
+//   without an attached document_url.
 async function uploadInvoiceFile(file, invoiceId) {
-  console.log('Uploading file:', file.name, 'size:', file.size, 'type:', file.type);
-  try {
-    const ext = file.name.split('.').pop() || 'jpg';
-    const path = 'invoices/'+invoiceId+'_'+Date.now()+'.'+ext;
-    const res = await fetch(SB_URL+'/storage/v1/object/Invoice/'+path, {
-      method: 'POST',
-      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer '+SB_KEY, 'Content-Type': file.type||'image/jpeg' },
-      body: file
-    });
-    if(!res.ok) { console.error('Upload failed:', res.status); return null; }
-    return SB_URL+'/storage/v1/object/public/Invoice/'+path;
-  } catch(e) {
-    console.error('Upload error:', e);
-    return null;
-  }
+  console.warn('uploadInvoiceFile: storage not yet migrated to Railway, skipping upload');
+  return null;
 }
 
 

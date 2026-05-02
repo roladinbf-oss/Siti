@@ -1,5 +1,7 @@
 const express = require('express');
 const path = require('path');
+const apiRouter = require('./api');
+const { runMigrations } = require('./db/migrate');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,6 +13,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// Anthropic proxy for the receipt-scan feature. Must be registered before the
+// generic /api router below, otherwise /api/:table with table='scan' would
+// shadow it and return 404.
 app.post('/api/scan', async (req, res) => {
   const apiKey = process.env.CLAUDE_API_KEY;
   if (!apiKey) {
@@ -35,12 +40,23 @@ app.post('/api/scan', async (req, res) => {
   }
 });
 
+// Generic CRUD over Postgres for the whitelisted tables.
+app.use('/api', apiRouter);
+
 app.use(express.static(path.join(__dirname)));
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+(async () => {
+  try {
+    await runMigrations();
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('Startup failed:', err);
+    process.exit(1);
+  }
+})();
