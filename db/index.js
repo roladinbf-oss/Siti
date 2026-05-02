@@ -1,4 +1,10 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// Match Supabase REST behaviour: return bigint and numeric as JS numbers, not
+// strings. Safe for this dataset (row counts and prices are well within
+// Number.MAX_SAFE_INTEGER).
+types.setTypeParser(20, (v) => (v === null ? null : parseInt(v, 10)));   // int8 / bigint
+types.setTypeParser(1700, (v) => (v === null ? null : parseFloat(v)));   // numeric
 
 const connectionString = process.env.DATABASE_URL;
 
