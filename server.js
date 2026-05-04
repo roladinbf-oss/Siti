@@ -19,7 +19,7 @@ app.use((req, res, next) => {
 app.post('/api/scan', async (req, res) => {
   const apiKey = process.env.CLAUDE_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'API key not configured' });
+    return res.status(500).json({ error: 'CLAUDE_API_KEY is not set in Railway environment variables. Go to Railway dashboard → siti-eran service → Variables → add CLAUDE_API_KEY.' });
   }
 
   try {
