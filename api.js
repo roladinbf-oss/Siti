@@ -23,6 +23,12 @@ const TABLES = new Set([
 
 const IDENT_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
+// pg doesn't auto-serialize JS objects/arrays for jsonb columns — do it here.
+function pgVal(v) {
+  if (v !== null && typeof v === 'object') return JSON.stringify(v);
+  return v;
+}
+
 const OP_MAP = {
   eq: '=',
   neq: '<>',
@@ -153,7 +159,7 @@ router.post('/:table', checkTable, async (req, res) => {
     for (const r of rows) {
       const placeholders = cols.map((c) => {
         if (r[c] === undefined) return 'DEFAULT';
-        params.push(r[c]);
+        params.push(pgVal(r[c]));
         return `$${pIdx++}`;
       });
       valuesSql.push(`(${placeholders.join(', ')})`);
@@ -185,7 +191,7 @@ router.patch('/:table', checkTable, async (req, res) => {
     let pIdx = 1;
     for (const c of cols) {
       setParts.push(`"${c}" = $${pIdx++}`);
-      params.push(updates[c]);
+      params.push(pgVal(updates[c]));
     }
     const where = buildWhere(req.query, pIdx);
     if (!where.sql) {
