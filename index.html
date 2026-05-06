@@ -3678,6 +3678,23 @@ async function handleSalesFile(input) {
       items.push({name,qty,revenue:rev,revenueInclVat:revRaw,cat,wastQty,wastVal,discount:disc,cancelQty,cancelVal,unitPrice:qty>0?rev/qty:0});
     });
 
+    // enrich items with recipe_id via POS SKU lookup
+    const posMap={};
+    POS_PRODUCTS.forEach(p=>{posMap[(p.product_name||'').toLowerCase()]=p;});
+    const recSkuMap={};
+    RECIPES.forEach(r=>{if(r.sku) recSkuMap[r.sku]=r.id;});
+    items.forEach(item=>{
+      const pos=posMap[item.name.toLowerCase()];
+      if(pos){
+        item.pos_sku=pos.sku;
+        const rid=recSkuMap[pos.sku];
+        if(rid){item.recipe_id=rid;item.unmatched=false;}
+        else item.unmatched=true;
+      } else {
+        item.unmatched=true;
+      }
+    });
+
     const date=document.getElementById('salesDate').value||new Date().toISOString().slice(0,10);
     // הקופה מחשבת: הכנסות = מכירות - פחת - הנחות - ביטולים
     // אנחנו רוצים מחזור ברוטו = הכנסות + פחת + הנחות
@@ -3709,15 +3726,20 @@ async function handleSalesFile(input) {
       // All items
       '<div style="font-size:10px;color:var(--text3);padding:6px 14px 2px;text-transform:uppercase;letter-spacing:.5px;">כל הפריטים ('+items.length+')</div>'+
       '<div style="max-height:300px;overflow-y:auto;">'+
-        topItems.map(i=>
-          '<div style="display:flex;align-items:center;padding:6px 14px;border-bottom:1px solid var(--border);gap:8px;">'+
-          '<div style="flex:1;"><div style="font-size:13px;">'+i.name+'</div>'+
+        topItems.map(i=>{
+          const matchTag = i.recipe_id
+            ? '<span style="font-size:9px;background:var(--green);color:#fff;border-radius:3px;padding:1px 4px;margin-left:4px;">✓ מקושר</span>'
+            : (i.pos_sku
+              ? '<span style="font-size:9px;background:var(--orange);color:#fff;border-radius:3px;padding:1px 4px;margin-left:4px;">מק"ט ללא מתכון</span>'
+              : '<span style="font-size:9px;background:var(--s3);color:var(--text3);border-radius:3px;padding:1px 4px;margin-left:4px;">לא מזוהה</span>');
+          return '<div style="display:flex;align-items:center;padding:6px 14px;border-bottom:1px solid var(--border);gap:8px;">'+
+          '<div style="flex:1;"><div style="font-size:13px;">'+i.name+matchTag+'</div>'+
           '<div style="font-size:11px;color:var(--text3);">'+i.cat+' | '+i.qty+' יח'+
             (i.wastQty>0?' | <span style="color:var(--red);">פחת: '+i.wastQty+' יח ('+fc(i.wastVal)+')</span>':'')+
           '</div></div>'+
           '<div style="font-size:13px;font-weight:700;color:var(--green);">'+fc(i.revenue)+'</div>'+
-          '</div>'
-        ).join('')+
+          '</div>';
+        }).join('')+
       '</div>'+
       (wasteItems.length?
         '<div style="font-size:10px;color:var(--text3);padding:6px 14px 2px;text-transform:uppercase;letter-spacing:.5px;">פחת לפי פריט</div>'+
