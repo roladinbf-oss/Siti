@@ -4405,9 +4405,15 @@ function renderRecipes() {
       const price=parseFloat(rec.selling_price)||0;
       const fc_pct=price>0?(cost/price*100).toFixed(0):null;
       const hasIng=(rec.ingredients||[]).length>0;
+      const skuBadge = rec.sku
+        ? '<span style="font-size:10px;color:var(--text3);background:var(--s2);border-radius:4px;padding:1px 5px;margin-left:4px;">מק"ט: '+rec.sku+'</span>'
+        : '<span style="font-size:10px;color:var(--orange);">⚠ ללא מק"ט</span>';
       html+='<div class="row" onclick="openRecipeDetail(\''+rec.id+'\')">'+
         '<div style="flex:1;"><div class="row-name">'+rec.name+'</div>'+
-        '<div class="row-sub">'+(hasIng?(rec.ingredients.length+' מרכיבים'):'<span style="color:var(--orange);">ללא מרכיבים</span>')+' | תפוקה: '+(rec.yield_qty||1)+' '+(rec.yield_unit||'יח')+'</div></div>'+
+        '<div class="row-sub" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">'+
+          skuBadge+
+          '<span>'+(hasIng?(rec.ingredients.length+' מרכיבים'):'<span style="color:var(--orange);">ללא מרכיבים</span>')+' | תפוקה: '+(rec.yield_qty||1)+' '+(rec.yield_unit||'יח')+'</span>'+
+        '</div></div>'+
         '<div style="text-align:left;">'+
           (price>0?'<div style="font-size:13px;font-weight:700;color:var(--gold);">₪'+price+'</div>':'')+
           '<div style="font-size:11px;color:'+(fc_pct>35?'var(--red)':fc_pct>28?'var(--orange)':'var(--green)')+';">'+(hasIng?'עלות: ₪'+cost.toFixed(2)+(fc_pct?' | FC:'+fc_pct+'%':''):'')+'</div>'+
