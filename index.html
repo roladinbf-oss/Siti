@@ -545,13 +545,14 @@ select.inp{cursor:pointer;}
     <button class="btn btn-red btn-sm" onclick="dedupeRecipes()">🗑 כפילויות</button>
   </div>
   <div class="tb">
-    <label for="recXlsFile" class="btn btn-outline btn-sm" style="flex:1;text-align:center;cursor:pointer;">📊 ייבא מאקסל</label>
+    <label for="recXlsFile" class="btn btn-outline btn-sm" style="flex:1;text-align:center;cursor:pointer;">📊 ייבא מתכונים מאקסל</label>
     <input type="file" id="recXlsFile" accept=".xlsx,.xls,.csv" style="display:none;" onchange="handleRecExcel(this)">
     <button class="btn btn-outline btn-sm" style="flex:1;" onclick="importExcelRecipes()">📋 טען 21 מתכונים</button>
     <button class="btn btn-outline btn-sm" style="flex:1;" onclick="seedSITIProducts()">🌱 טען מוצרי SITI</button>
   </div>
-  <div class="tb">
-    <label for="posSkuFile" class="btn btn-outline btn-sm" style="flex:1;text-align:center;cursor:pointer;">🏪 ייבוא מק"טים מקופה</label>
+  <div class="tb" style="border-top:2px solid var(--gold);margin-top:2px;padding-top:6px;">
+    <span style="font-size:10px;color:var(--gold);font-weight:700;white-space:nowrap;padding-left:4px;">קופה:</span>
+    <label for="posSkuFile" class="btn btn-gold btn-sm" style="flex:1;text-align:center;cursor:pointer;">🏪 ייבוא מק"טים מקופה → pos_products</label>
     <input type="file" id="posSkuFile" accept=".xlsx,.xls,.csv" style="display:none;" onchange="handlePosSkuExcel(this)">
   </div>
   <div id="recList"></div>
@@ -4394,6 +4395,7 @@ let _currentRecId = null;
 
 // ── POS SKU Excel import ──
 async function handlePosSkuExcel(input) {
+  // GUARD: this function only writes to pos_products. Never touches recipes.
   if(!input.files||!input.files.length) return;
   const file = input.files[0]; input.value='';
   showToast('מעבד קובץ מק"טים...','warn');
@@ -4425,6 +4427,7 @@ async function handlePosSkuExcel(input) {
       parsed.push({sku, product_name, category});
     });
     if(!parsed.length){showToast('לא נמצאו שורות תקינות','err');return;}
+    console.log('[handlePosSkuExcel] Importing', parsed.length, 'rows to pos_products (NOT recipes)');
     const existing = await sbGet('pos_products','?limit=5000') || [];
     const existingMap = {};
     existing.forEach(p=>{ existingMap[p.sku]=p; });
@@ -4451,8 +4454,9 @@ async function handlePosSkuExcel(input) {
       }
     }
     POS_PRODUCTS = await sbGet('pos_products','?order=product_name.asc&limit=2000') || [];
+    console.log('[handlePosSkuExcel] Done. pos_products now has', POS_PRODUCTS.length, 'entries');
     renderRecipes();
-    showToast('יובאו '+parsed.length+' מוצרים | חדשים: '+added+' | עודכנו: '+updated+' ✓');
+    showToast('יובאו '+parsed.length+' מוצרי קופה ל-pos_products | חדשים: '+added+' | עודכנו: '+updated+' ✓');
   } catch(e) {
     showToast('שגיאה: '+e.message.slice(0,50),'err');
   }
@@ -4919,9 +4923,11 @@ async function deleteRecipe() {
 }
 
 async function handleRecExcel(input) {
+  // This function writes to the RECIPES table. For POS catalog use "ייבוא מקטים מקופה" instead.
   if(!input.files||!input.files.length)return;
   const file=input.files[0]; input.value='';
-  showToast('מעבד...','warn');
+  console.log('[handleRecExcel] Importing recipes from Excel (writes to recipes table)');
+  showToast('מייבא מתכונים מאקסל...','warn');
   try {
     if(!window.XLSX) await loadSheetJS();
     const buf=await file.arrayBuffer();
