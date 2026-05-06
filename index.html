@@ -1247,6 +1247,7 @@ let _recPremakes = [];
 let _repTab = 'products';
 let _repData = null;
 let INGREDIENT_ALIASES = [];
+let POS_PRODUCTS = [];
 
 async function loadIngredientAliases() {
   const data = await sbGet('ingredient_aliases', '?order=generic_name.asc&limit=200');
@@ -1279,16 +1280,18 @@ let _currentIngId = null;
 async function loadAll() {
   showToast('טוען...','warn');
   try {
-    const [ing, rec, aliases, dough] = await Promise.all([
+    const [ing, rec, aliases, dough, posProd] = await Promise.all([
       sbGet('ingredients','?order=name.asc&limit=500'),
       sbGet('recipes','?order=name.asc&limit=500'),
       sbGet('ingredient_aliases','?order=generic_name.asc&limit=200'),
-      sbGet('dough_usage','?order=product_name.asc&limit=200')
+      sbGet('dough_usage','?order=product_name.asc&limit=200'),
+      sbGet('pos_products','?order=product_name.asc&limit=2000'),
     ]);
     INGREDIENTS = ing || [];
     RECIPES = rec || [];
     INGREDIENT_ALIASES = aliases || [];
     DOUGH_USAGE = dough || [];
+    POS_PRODUCTS = posProd || [];
     
     const dbg = document.getElementById('dashDebug');
     if(dbg) dbg.textContent = 'חומרי גלם: '+INGREDIENTS.length+' | מתכונים: '+RECIPES.length;
