@@ -530,6 +530,10 @@ select.inp{cursor:pointer;}
     <button class="btn btn-outline btn-sm" style="flex:1;" onclick="importExcelRecipes()">📋 טען 21 מתכונים</button>
     <button class="btn btn-outline btn-sm" style="flex:1;" onclick="seedSITIProducts()">🌱 טען מוצרי SITI</button>
   </div>
+  <div class="tb">
+    <label for="posSkuFile" class="btn btn-outline btn-sm" style="flex:1;text-align:center;cursor:pointer;">🏪 ייבוא מק"טים מקופה</label>
+    <input type="file" id="posSkuFile" accept=".xlsx,.xls,.csv" style="display:none;" onchange="handlePosSkuExcel(this)">
+  </div>
   <div id="recList"></div>
 </div>
 
@@ -4315,6 +4319,72 @@ function calcProportionalFixed(from, to) {
 
 // ═══ RECIPES / עץ מוצר ══════════════════════════════════════════
 let _currentRecId = null;
+
+// ── POS SKU Excel import ──
+async function handlePosSkuExcel(input) {
+  if(!input.files||!input.files.length) return;
+  const file = input.files[0]; input.value='';
+  showToast('מעבד קובץ מק"טים...','warn');
+  try {
+    if(!window.XLSX) await loadSheetJS();
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf,{type:'array'});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+    if(!rows.length){showToast('הקובץ ריק','err');return;}
+    const header = rows[0].map(h=>String(h).trim());
+    const skuI = header.findIndex(h=>
+      /מק"ט|מקט|sku|barcode|קוד פריט|קוד מוצר|item.*code|product.*code/i.test(h)
+    );
+    const nameI = header.findIndex(h=>
+      /שם פריט|שם מוצר|product.*name|item.*name|תיאור|description/i.test(h)
+    );
+    const catI = header.findIndex(h=>
+      /קטגוריה|category|סוג/i.test(h)
+    );
+    if(skuI<0){showToast('לא נמצאה עמודת מק"ט בקובץ','err');return;}
+    if(nameI<0){showToast('לא נמצאה עמודת שם מוצר בקובץ','err');return;}
+    const parsed = [];
+    rows.slice(1).forEach(cells=>{
+      const sku = String(cells[skuI]||'').trim();
+      const product_name = String(cells[nameI]||'').trim();
+      if(!sku||!product_name) return;
+      const category = catI>=0 ? String(cells[catI]||'').trim()||null : null;
+      parsed.push({sku, product_name, category});
+    });
+    if(!parsed.length){showToast('לא נמצאו שורות תקינות','err');return;}
+    const existing = await sbGet('pos_products','?limit=5000') || [];
+    const existingMap = {};
+    existing.forEach(p=>{ existingMap[p.sku]=p; });
+    let added=0, updated=0;
+    for(const row of parsed) {
+      if(existingMap[row.sku]) {
+        const ex = existingMap[row.sku];
+        if(ex.product_name!==row.product_name || ex.category!==row.category) {
+          await sbPatch('pos_products','sku=eq.'+encodeURIComponent(row.sku),{
+            product_name: row.product_name,
+            category: row.category,
+            imported_at: new Date().toISOString()
+          });
+          updated++;
+        }
+      } else {
+        await sbPost('pos_products',{
+          sku: row.sku,
+          product_name: row.product_name,
+          category: row.category||null,
+          imported_at: new Date().toISOString()
+        });
+        added++;
+      }
+    }
+    POS_PRODUCTS = await sbGet('pos_products','?order=product_name.asc&limit=2000') || [];
+    renderRecipes();
+    showToast('יובאו '+parsed.length+' מוצרים | חדשים: '+added+' | עודכנו: '+updated+' ✓');
+  } catch(e) {
+    showToast('שגיאה: '+e.message.slice(0,50),'err');
+  }
+}
 let _recIngredients = [];
 
 function renderRecipes() {
