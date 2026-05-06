@@ -934,6 +934,14 @@ select.inp{cursor:pointer;}
     <input type="hidden" id="recId">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
       <div class="field" style="grid-column:1/-1;"><label>שם המוצר</label><input type="text" class="inp" id="recName" placeholder="קרואסון חמאה..."></div>
+      <div class="field" style="grid-column:1/-1;">
+        <label>מק"ט קופה</label>
+        <div style="position:relative;" id="recSkuWrap">
+          <input type="text" class="inp" id="recSku" placeholder="הקלד מק&quot;ט או שם מוצר לחיפוש..." autocomplete="off" oninput="openSkuDrop()" onfocus="openSkuDrop()">
+          <div id="recSkuDrop" style="display:none;position:absolute;top:100%;right:0;left:0;background:var(--s2);border:1px solid var(--border);border-radius:var(--r2);max-height:180px;overflow-y:auto;z-index:999;"></div>
+        </div>
+        <div id="recSkuSuggestion" style="display:none;margin-top:4px;font-size:11px;color:var(--text3);background:var(--s2);border-radius:4px;padding:4px 8px;cursor:pointer;" onclick="applySkuSuggestion()"></div>
+      </div>
       <div class="field"><label>סוג מוצר</label>
         <select class="inp" id="recProductType">
           <option value="finished">🛍️ מוצר מוגמר (למכירה)</option>
@@ -4385,6 +4393,60 @@ async function handlePosSkuExcel(input) {
     showToast('שגיאה: '+e.message.slice(0,50),'err');
   }
 }
+function findPosFuzzyMatch(name) {
+  if(!POS_PRODUCTS.length||!name) return null;
+  const norm = s => s.toLowerCase().replace(/[^א-תa-z0-9]/g,'');
+  const n = norm(name);
+  let best=null, bestScore=0;
+  for(const p of POS_PRODUCTS) {
+    const pn = norm(p.product_name||'');
+    if(pn===n) return p;
+    let score=0;
+    for(let i=0;i<n.length-1;i++){
+      if(pn.includes(n.slice(i,i+2))) score++;
+    }
+    const len=Math.max(n.length,pn.length)||1;
+    const norm_score=score/len;
+    if(norm_score>bestScore){bestScore=norm_score;best=p;}
+  }
+  return bestScore>0.4?best:null;
+}
+
+function openSkuDrop() {
+  const inp = document.getElementById('recSku');
+  const drop = document.getElementById('recSkuDrop');
+  if(!inp||!drop) return;
+  const q = inp.value.trim().toLowerCase();
+  if(!q||!POS_PRODUCTS.length){drop.style.display='none';return;}
+  const matches = POS_PRODUCTS.filter(p=>
+    (p.sku||'').toLowerCase().includes(q)||(p.product_name||'').toLowerCase().includes(q)
+  ).slice(0,12);
+  if(!matches.length){drop.style.display='none';return;}
+  drop.innerHTML = matches.map(p=>
+    '<div style="padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:12px;" '+
+    'onmousedown="selectPosSku(\''+p.sku.replace(/'/g,"\\'")+'\')" '+
+    'onmouseover="this.style.background=\'var(--s3)\'" onmouseout="this.style.background=\'\'">'+
+    '<span style="color:var(--gold);font-weight:700;">'+p.sku+'</span> — '+p.product_name+
+    (p.category?'<span style="color:var(--text3);font-size:10px;"> ('+p.category+')</span>':'')+
+    '</div>'
+  ).join('');
+  drop.style.display='block';
+}
+
+function selectPosSku(sku) {
+  const inp = document.getElementById('recSku');
+  const drop = document.getElementById('recSkuDrop');
+  if(inp) inp.value = sku;
+  if(drop) drop.style.display='none';
+  document.getElementById('recSkuSuggestion').style.display='none';
+}
+
+function applySkuSuggestion() {
+  const el = document.getElementById('recSkuSuggestion');
+  if(!el||!el.dataset.sku) return;
+  selectPosSku(el.dataset.sku);
+}
+
 let _recIngredients = [];
 
 function renderRecipes() {
@@ -4443,6 +4505,17 @@ function openRecipeModal(rec) {
   if(delBtn) delBtn.style.display=rec?'block':'none';
   document.getElementById('recId').value = rec?.id||'';
   document.getElementById('recName').value = rec?.name||'';
+  document.getElementById('recSku').value = rec?.sku||'';
+  document.getElementById('recSkuDrop').style.display='none';
+  const suggEl = document.getElementById('recSkuSuggestion');
+  if(!rec?.sku && rec?.name) {
+    const match = findPosFuzzyMatch(rec.name);
+    if(match){
+      suggEl.textContent='הצעה: '+match.product_name+' ('+match.sku+') — לחץ לאישור';
+      suggEl.dataset.sku=match.sku;
+      suggEl.style.display='block';
+    } else { suggEl.style.display='none'; }
+  } else { suggEl.style.display='none'; }
   document.getElementById('recCat').value = rec?.category||'';
   const premakeCats = ['בצקים','קרמים','מליות','רטבים','מוצרים נלווים'];
   const isPremake = premakeCats.includes(rec?.category||'');
@@ -4729,6 +4802,7 @@ async function dedupeRecipes() {
 async function saveRecipe() {
   const data={
     name:document.getElementById('recName').value.trim(),
+    sku:document.getElementById('recSku').value.trim()||null,
     category:document.getElementById('recCat').value.trim(),
     product_type:document.getElementById('recProductType').value,
     selling_price:parseFloat(document.getElementById('recPrice').value)||0,
@@ -5603,6 +5677,10 @@ function setPremakeRecipe(i, recipeId) { pmPickRecipe(i, recipeId, {preventDefau
 document.addEventListener('mousedown', function(e) {
   if(!e.target.closest('[id^="pm-wrap-"]')) {
     document.querySelectorAll('[id^="pm-drop-"]').forEach(d => d.style.display='none');
+  }
+  if(!e.target.closest('#recSkuWrap')) {
+    const d=document.getElementById('recSkuDrop');
+    if(d) d.style.display='none';
   }
 });
 
