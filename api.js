@@ -11,6 +11,7 @@ const TABLES = new Set([
   'invoices',
   'labor_log',
   'packaging_rules',
+  'pos_products',
   'production_log',
   'production_logs',
   'purchase_orders',
