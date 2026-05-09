@@ -1180,6 +1180,19 @@ select.inp{cursor:pointer;}
   </div>
 </div>
 
+<!-- Document Viewer Modal -->
+<div class="overlay" id="docViewerModal">
+  <div class="modal" style="max-width:700px;max-height:92vh;padding:0;overflow:hidden;display:flex;flex-direction:column;">
+    <div style="padding:14px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);">
+      <span id="docViewerTitle" style="font-size:15px;font-weight:700;">📄 מסמך</span>
+      <button onclick="closeModal('docViewerModal')" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;">✕</button>
+    </div>
+    <div id="docViewerContent" style="flex:1;overflow:auto;min-height:300px;display:flex;align-items:center;justify-content:center;padding:8px;">
+      <div style="color:var(--text3);">טוען...</div>
+    </div>
+  </div>
+</div>
+
 <!-- Order Modal -->
 <div class="overlay" id="orderModal">
   <div class="modal" style="max-height:92vh;padding:0;overflow:hidden;display:flex;flex-direction:column;">
@@ -2126,7 +2139,7 @@ async function handleMultiScan(input) {
         const existing = await sbGet('invoices','?inv_num=eq.'+encodeURIComponent(json.docNum)+'&supplier_name=eq.'+encodeURIComponent(json.supplierName||'')+'&limit=1');
         if(existing&&existing.length>0){isDupe=true;dupes++;}
       }
-      if(!isDupe){await doSavePurchaseQuiet(json);success++;}
+      if(!isDupe){await doSavePurchaseQuiet(json,file);success++;}
       results.push({file:file.name,supplier:json.supplierName||'',docNum:json.docNum||'',total:json.totalInclVat||0,status:isDupe?'כפול':'✓',ok:true});
     } catch(e) {
       failed++;
@@ -2157,13 +2170,17 @@ async function handleMultiScan(input) {
   renderDashboard();
 }
 
-async function doSavePurchaseQuiet(json) {
+async function doSavePurchaseQuiet(json, file) {
   const date = parseCSVDate(json.date) || document.getElementById('purDate')?.value || new Date().toISOString().slice(0,10);
   const excl=parseFloat(json.totalExclVat||0);
   const incl=parseFloat(json.totalInclVat||excl*VAT_RATE||0);
   const vatAmt=parseFloat(json.vat||incl-excl||0);
   const safeDate = parseCSVDate(json.date)||date;
-  await sbPost('invoices',{supplier_name:json.supplierName||'',inv_num:json.docNum||'',invoice_number:json.docNum||'',date:safeDate,total:incl,total_excl_vat:excl,total_incl_vat:incl,vat:vatAmt,total_discount:parseFloat(json.totalDiscount||0),items:json.items||[],created_at:new Date().toISOString()});
+  const savedInvoice = await sbPost('invoices',{supplier_name:json.supplierName||'',inv_num:json.docNum||'',invoice_number:json.docNum||'',date:safeDate,total:incl,total_excl_vat:excl,total_incl_vat:incl,vat:vatAmt,total_discount:parseFloat(json.totalDiscount||0),items:json.items||[],created_at:new Date().toISOString()});
+  if(file && savedInvoice && savedInvoice.id) {
+    const filename = await uploadInvoiceFile(file, savedInvoice.id);
+    if(filename) await sbPatch('invoices','id=eq.'+savedInvoice.id,{document_url: filename});
+  }
   // Update inventory quietly
   for(const item of (json.items||[])) {
     const barcode=item.barcode||''; const makat=item.makat||'';
@@ -2450,7 +2467,7 @@ async function loadPurchases() {
       '<div style="flex:1;cursor:'+(hasItems?'pointer':'default')+'" '+(hasItems?'onclick="toggleEl(\''+uid+'\')"':'')+'>'+
         '<div class="row-name">'+(inv.supplier_name||inv.supplier||'ספק')+(isCredit?' <span class="badge bg-green" style="font-size:9px;">זיכוי</span>':'')+
         (hasItems?' <span style="font-size:10px;color:var(--gold);">▾ '+(inv.items||[]).length+' פריטים</span>':'')+'</div>'+
-        '<div class="row-sub">'+(inv.inv_num||inv.invoice_number||'')+(inv.date?' | '+inv.date:'')+(inv.document_url?' | <a href="'+inv.document_url+'" target="_blank" style="color:var(--gold);">📄 מסמך</a>':'')+'</div>'+
+        '<div class="row-sub">'+(inv.inv_num||inv.invoice_number||'')+(inv.date?' | '+inv.date:'')+(inv.document_url?' | <button onclick="viewInvoiceDoc('+inv.id+',event)" style="color:var(--gold);background:none;border:none;cursor:pointer;padding:0;font-size:12px;">📄 מסמך</button>':'')+'</div>'+
       '</div>'+
       '<div style="text-align:left;"><div style="font-size:13px;font-weight:700;color:'+(isCredit?'var(--green)':'var(--orange)')+';">'+fc(Math.abs(excl))+'</div>'+
       '<div style="font-size:11px;color:var(--text3);">כולל: '+fc(Math.abs(incl))+'</div></div>'+
@@ -2764,16 +2781,8 @@ async function doSavePurchase(json) {
     }
   }
 
-  // העלה קובץ אם קיים
-  let documentUrl = null;
-  if(_scanFile) {
-    const tempId = json.docNum || Date.now().toString();
-    documentUrl = await uploadInvoiceFile(_scanFile, tempId);
-    _scanFile = null;
-  }
-
-  // Save invoice
-  await sbPost('invoices',{
+  // Save invoice first to get its DB id
+  const savedInvoice = await sbPost('invoices',{
     supplier_name: json.supplierName||'',
     inv_num: json.docNum||'',
     invoice_number: json.docNum||'',
@@ -2784,9 +2793,15 @@ async function doSavePurchase(json) {
     vat: vatAmt,
     total_discount: parseFloat(json.totalDiscount||0),
     items: json.items||[],
-    document_url: documentUrl,
     created_at: new Date().toISOString()
   });
+
+  // Upload original file and link it to the saved invoice
+  if(_scanFile && savedInvoice && savedInvoice.id) {
+    const filename = await uploadInvoiceFile(_scanFile, savedInvoice.id);
+    if(filename) await sbPatch('invoices','id=eq.'+savedInvoice.id,{document_url: filename});
+    _scanFile = null;
+  }
 
   // שאל פעם אחת לאיזה מחסן להכניס את כל החשבונית
   const invoiceWarehouse = (json.items||[]).length > 0
@@ -2922,11 +2937,17 @@ async function doSavePurchase(json) {
   showToast('נשמר | עודכן: '+updated+' | חדש: '+added+' ✓');
 }
 
-// Manual purchase
 async function sendInvoicesToAccountant() {
-  // בחר חודש
-  const monthInput = prompt('בחר חודש לשליחה (YYYY-MM, למשל 2026-03):',
-    new Date().toISOString().slice(0,7));
+  // אם אין מייל רואה חשבון שמור — שאל
+  let accountantEmail = localStorage.getItem('siti_accountant_email') || '';
+  if(!accountantEmail) {
+    const entered = prompt('הכנס כתובת מייל של רואה חשבון (תישמר לשימושים הבאים):','');
+    if(!entered) return;
+    accountantEmail = entered.trim();
+    localStorage.setItem('siti_accountant_email', accountantEmail);
+  }
+
+  const monthInput = prompt('בחר חודש לשליחה (YYYY-MM, למשל 2026-03):', new Date().toISOString().slice(0,7));
   if(!monthInput) return;
 
   const [y,m] = monthInput.split('-');
@@ -2938,7 +2959,6 @@ async function sendInvoicesToAccountant() {
   const invoices = await sbGet('invoices', '?date=gte.'+from+'&date=lte.'+to+'&order=supplier_name.asc&limit=500');
   if(!invoices||!invoices.length) { showToast('אין חשבוניות לחודש זה','warn'); return; }
 
-  // בנה תוכן מייל
   const heMonths = ['','ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
   const monthName = heMonths[parseInt(m)]+' '+y;
 
@@ -2963,7 +2983,7 @@ async function sendInvoicesToAccountant() {
         (inv.inv_num?'#'+inv.inv_num+' ':'')+
         (inv.date||'')+' | '+
         '₪'+Math.abs(parseFloat(inv.total_excl_vat||0)).toFixed(0)+' לפני מע"מ'+
-        (inv.document_url?' | '+inv.document_url:' | אין מסמך')+
+        (inv.document_url?' | יש מסמך':' | אין מסמך')+
         '%0A';
     });
     const supTotal = invs.reduce((s,i)=>s+parseFloat(i.total_excl_vat||0),0);
@@ -2976,8 +2996,10 @@ async function sendInvoicesToAccountant() {
   body += 'SITI Boulangerie ERP';
 
   const subject = 'חשבוניות SITI - '+monthName;
-  const mailto = 'mailto:?subject='+encodeURIComponent(subject)+'&body='+body;
-  window.location.href = mailto;
+  const docsCount = invoices.filter(i=>i.document_url).length;
+  const mailto = 'mailto:'+encodeURIComponent(accountantEmail)+'?subject='+encodeURIComponent(subject)+'&body='+body;
+  window.open(mailto, '_blank');
+  showToast('נפתח תוכנת מייל — '+invoices.length+' חשבוניות, '+docsCount+' עם מסמך');
 }
 
 function openCreditNote() {
@@ -6028,8 +6050,51 @@ function renderRepMonthly() {
 //   (c) external (S3/R2). Until decided, scans still create invoices but
 //   without an attached document_url.
 async function uploadInvoiceFile(file, invoiceId) {
-  console.warn('uploadInvoiceFile: storage not yet migrated to Railway, skipping upload');
-  return null;
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = e => resolve(e.target.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    await sbPost('invoice_documents', {
+      invoice_id: invoiceId,
+      filename: file.name,
+      mimetype: file.type || 'application/octet-stream',
+      data: base64,
+    });
+    return file.name;
+  } catch(e) {
+    console.warn('uploadInvoiceFile failed:', e.message);
+    return null;
+  }
+}
+
+async function viewInvoiceDoc(invoiceId, e) {
+  if(e) { e.stopPropagation(); }
+  const titleEl = document.getElementById('docViewerTitle');
+  const content = document.getElementById('docViewerContent');
+  content.innerHTML = '<div style="color:var(--text3);text-align:center;padding:40px;">טוען...</div>';
+  if(titleEl) titleEl.textContent = '📄 מסמך';
+  document.getElementById('docViewerModal').classList.add('open');
+
+  const docs = await sbGet('invoice_documents', '?invoice_id=eq.'+invoiceId+'&limit=1');
+  if(!docs || !docs.length || !docs[0].data) {
+    content.innerHTML = '<div style="color:var(--text3);text-align:center;padding:40px;">הקובץ המקורי לא זמין</div>';
+    return;
+  }
+  const doc = docs[0];
+  if(titleEl) titleEl.textContent = '📄 ' + (doc.filename || 'מסמך');
+  const mime = doc.mimetype || 'application/octet-stream';
+  const bStr = atob(doc.data);
+  const bytes = new Uint8Array(bStr.length);
+  for(let i = 0; i < bStr.length; i++) bytes[i] = bStr.charCodeAt(i);
+  const blobUrl = URL.createObjectURL(new Blob([bytes], {type: mime}));
+  if(mime.includes('pdf')) {
+    content.innerHTML = '<iframe src="'+blobUrl+'" style="width:100%;height:65vh;border:none;"></iframe>';
+  } else {
+    content.innerHTML = '<img src="'+blobUrl+'" style="max-width:100%;max-height:65vh;object-fit:contain;cursor:zoom-in;" onclick="window.open(\''+blobUrl+'\',\'_blank\')">';
+  }
 }
 
 

@@ -8,6 +8,7 @@ const TABLES = new Set([
   'fixed_workers',
   'ingredient_aliases',
   'ingredients',
+  'invoice_documents',
   'invoices',
   'labor_log',
   'packaging_rules',
