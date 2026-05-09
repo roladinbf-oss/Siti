@@ -13,6 +13,16 @@ app.use((req, res, next) => {
   next();
 });
 
+// Health / debug endpoint — never returns the actual key value.
+app.get('/healthz', (req, res) => {
+  res.json({
+    ok: true,
+    hasClaudeKey: !!process.env.CLAUDE_API_KEY,
+    nodeVersion: process.version,
+    deployVersion: 'v227',
+  });
+});
+
 // Anthropic proxy for the receipt-scan feature. Must be registered before the
 // generic /api router below, otherwise /api/:table with table='scan' would
 // shadow it and return 404.

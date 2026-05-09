@@ -2060,12 +2060,52 @@ function calcFGStock(prodLogs, salesLogs) {
   return stock;
 }
 
+async function _scanFileWithRetry(file, maxRetries) {
+  const base64 = await fileToBase64(file);
+  const isPDF = file.type==='application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+  const isHEIC = file.type==='image/heic'||file.type==='image/heif'||file.name.toLowerCase().endsWith('.heic')||file.name.toLowerCase().endsWith('.heif');
+  const mediaType = isPDF ? 'application/pdf' : isHEIC ? 'image/jpeg' : (file.type||'image/jpeg');
+  const supContext = INGREDIENTS.slice(0,50).map(ig=>(ig.sku?ig.sku+'|':'')+ig.name+' ₪'+ig.price_per_unit+'/'+ig.unit).join('\n');
+  const prompt = buildScanPrompt(supContext);
+  const payload = {model:'claude-sonnet-4-20250514',max_tokens:4000,messages:[{role:'user',content:[{type:isPDF?'document':'image',source:{type:'base64',media_type:mediaType,data:base64}},{type:'text',text:prompt}]}]};
+  let lastErr;
+  for(let attempt=0; attempt<maxRetries; attempt++) {
+    if(attempt>0) await new Promise(r=>setTimeout(r, attempt * 3000));
+    const resp = await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const rawText = await resp.text();
+    let data;
+    try { data = JSON.parse(rawText); } catch(e) {
+      if(rawText.toLowerCase().includes('overload')) { lastErr=new Error('השרת עמוס'); continue; }
+      throw new Error('תגובה לא תקינה מהשרת');
+    }
+    if(data.error) {
+      const msg = String(data.error.message||data.error);
+      if(msg.toLowerCase().includes('overload')||msg.includes('529')||resp.status===429||resp.status===529) {
+        lastErr=new Error(msg); continue;
+      }
+      throw new Error(msg);
+    }
+    const text = (data.content||[]).map(c=>c.text||'').join('').trim();
+    if(!text) throw new Error('תגובה ריקה מהשרת');
+    return JSON.parse(extractJSON(text));
+  }
+  throw lastErr||new Error('נכשל לאחר '+maxRetries+' ניסיונות');
+}
+
+let _multiFailedFiles = [];
+
+async function retryFailedScans() {
+  if(!_multiFailedFiles.length) return;
+  const fakeInput = {files: _multiFailedFiles, value: ''};
+  await handleMultiScan(fakeInput);
+}
+
 async function handleMultiScan(input) {
   if(!input.files||!input.files.length) return;
   const files = Array.from(input.files);
-  input.value='';
+  if(input.value !== undefined) input.value='';
+  _multiFailedFiles = [];
 
-  // Show progress
   const resultEl = document.getElementById('purScanResult');
   resultEl.innerHTML = '<div class="card"><div class="card-h">📁 מעבד '+files.length+' קבצים...</div><div id="multiProgress" style="padding:10px 14px;"></div></div>';
 
@@ -2075,42 +2115,31 @@ async function handleMultiScan(input) {
   for(let i=0; i<files.length; i++) {
     const file = files[i];
     const progressEl = document.getElementById('multiProgress');
-    if(progressEl) progressEl.innerHTML = '<div style="font-size:13px;color:var(--text2);">מעבד '+( i+1)+'/'+files.length+': '+file.name+'...</div>'+
-      '<div style="background:var(--s3);border-radius:4px;height:6px;margin-top:6px;"><div style="background:var(--gold);height:100%;border-radius:4px;width:'+Math.round((i+1)/files.length*100)+'%;transition:width .3s;"></div></div>';
-
+    if(progressEl) progressEl.innerHTML =
+      '<div style="font-size:13px;color:var(--text2);">מעבד '+(i+1)+'/'+files.length+': '+file.name+'...</div>'+
+      '<div style="background:var(--s3);border-radius:4px;height:6px;margin-top:6px;">'+
+        '<div style="background:var(--gold);height:100%;border-radius:4px;width:'+Math.round((i+1)/files.length*100)+'%;transition:width .3s;"></div></div>';
     try {
-      const base64 = await fileToBase64(file);
-      const isPDF = file.type==='application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-      const isHEIC = file.type==='image/heic'||file.type==='image/heif'||file.name.toLowerCase().endsWith('.heic')||file.name.toLowerCase().endsWith('.heif');
-      const mediaType = isPDF ? 'application/pdf' : isHEIC ? 'image/jpeg' : (file.type||'image/jpeg');
-      const supContext = INGREDIENTS.slice(0,50).map(ig=>(ig.sku?ig.sku+'|':'')+ig.name+' ₪'+ig.price_per_unit+'/'+ig.unit).join('\n');
-      const prompt = buildScanPrompt(supContext);
-      const response = await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:4000,messages:[{role:'user',content:[{type:isPDF?'document':'image',source:{type:'base64',media_type:mediaType,data:base64}},{type:'text',text:prompt}]}]})});
-      const data = await response.json();
-      if(data.error) throw new Error(data.error.message||data.error);
-      const rawText = (data.content||[]).map(c=>c.text||'').join('').trim();
-      if(!rawText) throw new Error('תגובה ריקה מהשרת');
-      const json = JSON.parse(extractJSON(rawText));
-
-      // Check duplicate
+      const json = await _scanFileWithRetry(file, 3);
       let isDupe = false;
       if(json.docNum) {
         const existing = await sbGet('invoices','?inv_num=eq.'+encodeURIComponent(json.docNum)+'&supplier_name=eq.'+encodeURIComponent(json.supplierName||'')+'&limit=1');
-        if(existing && existing.length > 0) { isDupe=true; dupes++; }
+        if(existing&&existing.length>0){isDupe=true;dupes++;}
       }
-
-      if(!isDupe) {
-        await doSavePurchaseQuiet(json);
-        success++;
-      }
-      results.push({file:file.name, supplier:json.supplierName||'', docNum:json.docNum||'', total:json.totalInclVat||0, status:isDupe?'כפול':'✓'});
+      if(!isDupe){await doSavePurchaseQuiet(json);success++;}
+      results.push({file:file.name,supplier:json.supplierName||'',docNum:json.docNum||'',total:json.totalInclVat||0,status:isDupe?'כפול':'✓',ok:true});
     } catch(e) {
       failed++;
-      results.push({file:file.name, supplier:'', docNum:'', total:0, status:'שגיאה: '+e.message.slice(0,30)});
+      _multiFailedFiles.push(file);
+      results.push({file:file.name,supplier:'',docNum:'',total:0,status:'שגיאה: '+e.message.slice(0,40),ok:false});
     }
+    // Small delay between files to avoid rate-limit bursts
+    if(i < files.length-1) await new Promise(r=>setTimeout(r,500));
   }
 
-  // Show summary
+  const retryBtn = failed>0
+    ? '<div style="padding:8px 14px;"><button class="btn btn-gold btn-sm" onclick="retryFailedScans()">🔄 נסה שוב '+failed+' שגיאות</button></div>'
+    : '';
   resultEl.innerHTML = '<div class="card">'+
     '<div class="card-h">סיכום — '+success+' נשמרו | '+dupes+' כפולות | '+failed+' שגיאות</div>'+
     '<div style="max-height:250px;overflow-y:auto;">'+
@@ -2119,10 +2148,10 @@ async function handleMultiScan(input) {
       '<div style="font-size:11px;color:var(--text3);">'+(r.docNum||r.file)+'</div></div>'+
       '<div style="display:flex;align-items:center;gap:8px;">'+
       (r.total?'<span style="font-size:13px;font-weight:700;color:var(--orange);">₪'+r.total+'</span>':'')+
-      '<span class="badge '+(r.status==='✓'?'bg-green':r.status==='כפול'?'bg-gold':'bg-red')+'">'+r.status+'</span>'+
+      '<span style="font-size:11px;padding:2px 6px;border-radius:4px;background:'+(r.ok?'var(--green)':r.status==='כפול'?'var(--gold)':'var(--red)')+';color:#fff;">'+r.status+'</span>'+
       '</div></div>'
     ).join('')+
-    '</div></div>';
+    '</div>'+retryBtn+'</div>';
 
   loadPurchases();
   renderDashboard();
