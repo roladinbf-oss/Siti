@@ -19,7 +19,7 @@ app.get('/healthz', (req, res) => {
     ok: true,
     hasClaudeKey: !!process.env.CLAUDE_API_KEY,
     nodeVersion: process.version,
-    deployVersion: 'v227',
+    deployVersion: 'v228',
   });
 });
 
