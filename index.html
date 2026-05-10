@@ -3149,12 +3149,15 @@ async function saveSITIProd() {
   if(!_sitiProdData) return;
   const d=_sitiProdData;
   await sbPost('production_log',{date:d.date,worker:d.worker,items:d.items,created_at:new Date().toISOString()});
-  // Deduct from inventory
-  await deductFromInventory(d.items);
+  const {deducted: sDed, notFound: sNF} = await deductFromInventory(d.items);
   _sitiProdData=null;
   document.getElementById('sitiProdPreview').style.display='none';
   renderInventory(); renderDashboard();
-  showToast('ייצור נשמר — מלאי עודכן ✓');
+  if(sDed===0 && sNF===0) {
+    showToast('⚠️ ייצור נשמר אך לא הורדו רכיבים — בדוק שהמתכונים מכילים מרכיבים', 'warn');
+  } else {
+    showToast('ייצור נשמר — הורד ממלאי: '+sDed+' רכיבים'+(sNF>0?' | '+sNF+' לא זוהו':'')+' ✓');
+  }
 }
 
 function renderProductionForm() {
@@ -3195,28 +3198,36 @@ async function saveProduction() {
   const items=Object.entries(_prodItems).filter(([,v])=>v>0).map(([k,v])=>{const rec=RECIPES.find(r=>String(r.id)===String(k));return{recipe_id:k,name:rec?.name||'',qty:v};});
   if(!items.length){showToast('הכנס כמויות','warn');return;}
   await sbPost('production_log',{date,worker,items,created_at:new Date().toISOString()});
-  await deductFromInventory(items);
+  const {deducted, notFound} = await deductFromInventory(items);
   _prodItems={};
   renderProductionForm(); renderInventory(); renderDashboard();
-  showToast('ייצור נשמר — מלאי עודכן ✓');
+  if(deducted===0 && notFound===0) {
+    showToast('⚠️ ייצור נשמר אך לא הורדו רכיבים — בדוק שהמתכונים מכילים מרכיבים', 'warn');
+  } else if(notFound>0) {
+    showToast('ייצור נשמר | הורד: '+deducted+' רכיבים | '+notFound+' לא זוהו ✓');
+  } else {
+    showToast('ייצור נשמר — הורד ממלאי: '+deducted+' רכיבים ✓');
+  }
 }
 
 async function deductFromInventory(items) {
-  // טען חוקי בצק אם לא נטענו
   if(DOUGH_USAGE.length === 0) await loadDoughUsage();
   if(INGREDIENT_ALIASES.length === 0) await loadIngredientAliases();
 
   const deductions={};
   items.forEach(item=>{
-    // ניכוי הכנות מקדימות לפי מתכון
     const qty = parseFloat(item.qty)||0;
-    const itemRec = RECIPES.find(r=>r.id===item.recipe_id||r.name===item.name);
+    // use String comparison so numeric DB id matches string key from _prodItems
+    const itemRec = RECIPES.find(r=>String(r.id)===String(item.recipe_id)||r.name===item.name);
+
+    // ניכוי הכנות מקדימות
     if(itemRec) {
       for(const ing of (itemRec.ingredients||[])) {
         if(ing.source==='premake' && ing.recipe_id) {
+          const premakeRec = RECIPES.find(r=>String(r.id)===String(ing.recipe_id));
           const premakeIng = INGREDIENTS.find(i=>
-            i.name===(RECIPES.find(r=>String(r.id)===String(ing.recipe_id))?.name||'') ||
-            cleanIngName(i.name)===cleanIngName(RECIPES.find(r=>String(r.id)===String(ing.recipe_id))?.name||'')
+            i.name===(premakeRec?.name||'') ||
+            cleanIngName(i.name)===cleanIngName(premakeRec?.name||'')
           );
           if(premakeIng && !premakeIng.unlimited_stock) {
             const pmQty = parseFloat(ing.qty)||0;
@@ -3244,16 +3255,16 @@ async function deductFromInventory(items) {
       deductions[key].totalKg += doughKg;
     });
 
-    const rec=RECIPES.find(r=>r.id===item.recipe_id||r.name===item.name);
+    const rec = RECIPES.find(r=>String(r.id)===String(item.recipe_id)||r.name===item.name);
     if(!rec) return;
     (rec.ingredients||[]).forEach(ing=>{
+      if(ing.source==='premake') return; // handled above — skip to prevent double-deduction
       if(!ing.ingredient_id&&!ing.name) return;
-      let qtyInRecipe = parseFloat(ing.qty||0) * (parseFloat(item.qty)||0);
+      let qtyInRecipe = parseFloat(ing.qty||0) * qty;
       const unit = (ing.unit||'').trim();
-      // המר לק"ג תמיד (יחידת ביניים)
       const isSmall = unit==='גרם'||unit==="ג'"||unit==='ג׳'||unit==='g'||unit==='gr'||
                       unit.includes('מ"ל')||unit.includes('מל')||unit==='ml';
-      const qtyKg = isSmall ? qtyInRecipe/1000 : qtyInRecipe; // ק"ג
+      const qtyKg = isSmall ? qtyInRecipe/1000 : qtyInRecipe;
 
       const key = ing.ingredient_id||ing.name;
       if(!deductions[key]) deductions[key]={totalKg:0,id:ing.ingredient_id,name:ing.name};
@@ -3261,34 +3272,35 @@ async function deductFromInventory(items) {
     });
   });
 
+  let deducted=0, notFound=0;
   for(const [key,ded] of Object.entries(deductions)) {
     const ing = resolveIngredient(ded.name) ||
       INGREDIENTS.find(i=>i.id===ded.id||i.name===ded.name||
       cleanIngName(i.name)===cleanIngName(ded.name));
-    if(!ing) continue;
-    if(ing.unlimited_stock) continue; // מלאי בלתי מוגבל — לא מנכים
+    if(!ing) { notFound++; continue; }
+    if(ing.unlimited_stock) continue;
 
     const pq2 = parseFloat(ing.purchase_unit_qty||0);
     const pg = parseFloat(ing.purchase_unit_grams||0);
     let deductUnits;
     if(ded.isDough) {
-      // בצק — מוריד ישירות בק"ג
       deductUnits = ded.totalKg;
     } else if(pq2 > 0) {
-      deductUnits = ded.totalKg; // יחידות
+      deductUnits = ded.totalKg;
     } else if(pg > 0) {
-      deductUnits = (ded.totalKg * 1000) / pg; // המר לגרמים ואז ליחידות רכישה
+      deductUnits = (ded.totalKg * 1000) / pg;
     } else {
       deductUnits = ded.totalKg;
     }
 
     const newQty = Math.max(0,(parseFloat(ing.stock_qty)||0) - deductUnits);
     await sbPatch('ingredients','id=eq.'+ing.id,{stock_qty:newQty,updated_at:new Date().toISOString()});
+    deducted++;
   }
 
   // הוסף בצקים/מליות/קרמים למלאי לפי yield_qty של המתכון
   for(const item of items) {
-    const rec = RECIPES.find(r=>r.id===item.recipe_id||r.name===item.name);
+    const rec = RECIPES.find(r=>String(r.id)===String(item.recipe_id)||r.name===item.name);
     if(!rec) continue;
     const cat = (rec.category||'').trim();
     if(!['בצקים','מליות','קרמים','רטבים'].includes(cat)) continue;
@@ -3317,6 +3329,7 @@ async function deductFromInventory(items) {
   }
   const fresh=await sbGet('ingredients','?order=name.asc&limit=500');
   if(fresh&&fresh.length) INGREDIENTS=fresh;
+  return {deducted, notFound};
 }
 
 async function handleProdFile(input) {
