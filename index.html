@@ -2122,7 +2122,7 @@ async function handleMultiScan(input) {
   const resultEl = document.getElementById('purScanResult');
   resultEl.innerHTML = '<div class="card"><div class="card-h">📁 מעבד '+files.length+' קבצים...</div><div id="multiProgress" style="padding:10px 14px;"></div></div>';
 
-  let success=0, failed=0, dupes=0;
+  let success=0, failed=0, dupes=0, totalUpdated=0, totalAdded=0;
   const results = [];
 
   for(let i=0; i<files.length; i++) {
@@ -2139,7 +2139,12 @@ async function handleMultiScan(input) {
         const existing = await sbGet('invoices','?inv_num=eq.'+encodeURIComponent(json.docNum)+'&supplier_name=eq.'+encodeURIComponent(json.supplierName||'')+'&limit=1');
         if(existing&&existing.length>0){isDupe=true;dupes++;}
       }
-      if(!isDupe){await doSavePurchaseQuiet(json,file);success++;}
+      if(!isDupe){
+        const inv = await doSavePurchaseQuiet(json,file);
+        success++;
+        totalUpdated += (inv&&inv.updated)||0;
+        totalAdded   += (inv&&inv.added)||0;
+      }
       results.push({file:file.name,supplier:json.supplierName||'',docNum:json.docNum||'',total:json.totalInclVat||0,status:isDupe?'כפול':'✓',ok:true});
     } catch(e) {
       failed++;
@@ -2150,11 +2155,14 @@ async function handleMultiScan(input) {
     if(i < files.length-1) await new Promise(r=>setTimeout(r,500));
   }
 
+  const invLine = (totalUpdated||totalAdded)
+    ? '<div style="font-size:12px;color:var(--gold);padding:4px 14px 0;">📦 מלאי: עודכן '+totalUpdated+' | חדש '+totalAdded+'</div>'
+    : (success>0 ? '<div style="font-size:12px;color:var(--orange);padding:4px 14px 0;">⚠️ לא נמצאו פריטים לעדכון מלאי</div>' : '');
   const retryBtn = failed>0
     ? '<div style="padding:8px 14px;"><button class="btn btn-gold btn-sm" onclick="retryFailedScans()">🔄 נסה שוב '+failed+' שגיאות</button></div>'
     : '';
   resultEl.innerHTML = '<div class="card">'+
-    '<div class="card-h">סיכום — '+success+' נשמרו | '+dupes+' כפולות | '+failed+' שגיאות</div>'+
+    '<div class="card-h">סיכום — '+success+' נשמרו | '+dupes+' כפולות | '+failed+' שגיאות</div>'+invLine+
     '<div style="max-height:250px;overflow-y:auto;">'+
     results.map(r=>'<div class="row" style="cursor:default;">'+
       '<div style="flex:1;"><div style="font-size:12px;font-weight:600;">'+(r.supplier||r.file)+'</div>'+
@@ -2182,6 +2190,7 @@ async function doSavePurchaseQuiet(json, file) {
     if(filename) await sbPatch('invoices','id=eq.'+savedInvoice.id,{document_url: filename});
   }
   // Update inventory quietly
+  let updCount=0, addCount=0;
   for(const item of (json.items||[])) {
     const barcode=item.barcode||''; const makat=item.makat||'';
     const cleanItemName = cleanIngName(item.name||"");
@@ -2203,11 +2212,13 @@ async function doSavePurchaseQuiet(json, file) {
       return i.name===item.name||cleanIngName(i.name)===cleanItemName||i.name.includes(cleanItemName)||cleanItemName.includes(cleanIngName(i.name));
     });
     const price=parseFloat(item.pricePerUnit||0);
-    if(known){const newQty=(parseFloat(known.stock_qty)||0)+(parseFloat(item.qty)||0);const upd={stock_qty:newQty,updated_at:new Date().toISOString()};if(price>0)upd.price_per_unit=price;await sbPatch('ingredients','id=eq.'+known.id,upd);}
-    else if(item.name){await sbPost('ingredients',{name:item.name,sku:barcode||makat,unit:item.unit||'יח',price_per_unit:price,stock_qty:parseFloat(item.qty)||0,min_stock:0,supplier:json.supplierName||'',updated_at:new Date().toISOString()});}
+    const actualQty=parseFloat(item.qtyTotal||item.qty)||0;
+    if(known){const newQty=(parseFloat(known.stock_qty)||0)+actualQty;const upd={stock_qty:newQty,updated_at:new Date().toISOString()};if(price>0)upd.price_per_unit=price;await sbPatch('ingredients','id=eq.'+known.id,upd);updCount++;}
+    else if(item.name){await sbPost('ingredients',{name:item.name,sku:barcode||makat,unit:item.unit||'יח',price_per_unit:price,stock_qty:actualQty,min_stock:0,supplier:json.supplierName||'',updated_at:new Date().toISOString()});addCount++;}
   }
   const fresh=await sbGet('ingredients','?order=name.asc&limit=500');
   if(fresh&&fresh.length) INGREDIENTS=fresh;
+  return {updated:updCount, added:addCount};
 }
 // ═══ CSV SUPPLIER IMPORT ════════════════════════════════════════
 async function handlePurCSV(input) {
@@ -2934,7 +2945,11 @@ async function doSavePurchase(json) {
   const fresh=await sbGet('ingredients','?order=name.asc&limit=500');
   if(fresh&&fresh.length) INGREDIENTS=fresh;
   renderInventory(); loadPurchases(); renderDashboard();
-  showToast('נשמר | עודכן: '+updated+' | חדש: '+added+' ✓');
+  if(updated===0 && added===0 && (json.items||[]).length>0) {
+    showToast('⚠️ חשבונית נשמרה אך לא זוהו פריטים להתאמה — בדוק שמות מוצרים', 'warn');
+  } else {
+    showToast('נשמר | עודכן: '+updated+' | חדש: '+added+' ✓');
+  }
 }
 
 async function sendInvoicesToAccountant() {
@@ -3077,7 +3092,9 @@ async function saveManualPurchase() {
   const items=_pmItems.filter(i=>i.ingredient_id||i.name).map(i=>({ingredient_id:i.ingredient_id||null,name:i.name,qty:parseFloat(i.qty)||0,pricePerUnit:parseFloat(i.price)||0}));
   await sbPost('invoices',{supplier_name:supplier,inv_num:docNum,invoice_number:docNum,date,total:incl,total_excl_vat:excl,vat,total_incl_vat:incl,items,created_at:new Date().toISOString()});
   // Update stock
+  let manualUpdated=0, manualAdded=0;
   for(const item of items) {
+    if(!item.qty || item.qty<=0) continue;
     const known = item.ingredient_id
       ? INGREDIENTS.find(i=>String(i.id)===String(item.ingredient_id))
       : INGREDIENTS.find(i=>i.name===item.name||cleanIngName(i.name)===cleanIngName(item.name));
@@ -3086,12 +3103,22 @@ async function saveManualPurchase() {
       const upd={stock_qty:nq,updated_at:new Date().toISOString()};
       if(item.pricePerUnit>0) upd.price_per_unit=item.pricePerUnit;
       await sbPatch('ingredients','id=eq.'+known.id,upd);
+      manualUpdated++;
+    } else if(item.name) {
+      await sbPost('ingredients',{name:item.name,unit:'יח',price_per_unit:item.pricePerUnit||0,stock_qty:item.qty,min_stock:0,supplier,updated_at:new Date().toISOString()});
+      manualAdded++;
     }
   }
   const fresh=await sbGet('ingredients','?order=name.asc&limit=500');
   if(fresh&&fresh.length) INGREDIENTS=fresh;
+  const fresh2=await sbGet('ingredients','?order=name.asc&limit=500');
+  if(fresh2&&fresh2.length) INGREDIENTS=fresh2;
   closeModal('purManualModal'); renderInventory(); loadPurchases(); renderDashboard();
-  showToast('חשבונית נשמרה ✓');
+  if(items.length>0 && manualUpdated===0 && manualAdded===0) {
+    showToast('⚠️ חשבונית נשמרה אך לא עודכן מלאי — בדוק שהפריטים מולאו', 'warn');
+  } else {
+    showToast('חשבונית נשמרה | מלאי עודכן: '+manualUpdated+' | חדש: '+manualAdded+' ✓');
+  }
 }
 
 // ═══ PRODUCTION ═══════════════════════════════════════════════════
